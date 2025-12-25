@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 from flask import Flask
 from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder,
+    Application,
     CommandHandler,
     MessageHandler,
     ContextTypes,
@@ -44,7 +44,7 @@ def run_web():
 # -------------------------------------
 
 
-# ---------- SELENIUM SETUP ----------
+# ---------- SELENIUM ----------
 CHROME_PATH = ChromeDriverManager().install()
 # ----------------------------------
 
@@ -65,7 +65,6 @@ def is_likely_real(url):
         return False
     if len(query.split("&")) > 5:
         return False
-
     return True
 
 
@@ -79,17 +78,15 @@ def resolve_link(start_url):
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--blink-settings=imagesEnabled=false")
-    options.add_argument("--disable-font-subpixel-positioning")
 
     driver = webdriver.Chrome(
         service=Service(CHROME_PATH),
         options=options
     )
 
-    wait = WebDriverWait(driver, 15, poll_frequency=0.4)
+    wait = WebDriverWait(driver, 15)
     driver.get(start_url)
 
-    # DO NOT CHANGE THIS TIMING
     for _ in range(4):
         wait.until(lambda d: CONTENT_DOMAIN in d.current_url)
         wait.until(EC.presence_of_element_located((By.ID, "tpForm")))
@@ -101,9 +98,7 @@ def resolve_link(start_url):
 
     time.sleep(10)
 
-    real_links = []
-    seen = set()
-
+    real_links, seen = [], set()
     for h in driver.window_handles:
         driver.switch_to.window(h)
         url = driver.current_url
@@ -153,9 +148,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome!\n\n"
         "Send an inshorturl link and I’ll try to find the real destination.\n\n"
-        "⚠️ Disclaimer:\n"
-        "Sometimes ads or incorrect URLs may appear.\n"
-        "If that happens, retry the same link."
+        "⚠️ Disclaimer: ads or wrong URLs may appear. Retry if needed."
     )
 
 
@@ -168,32 +161,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Send a valid inshorturl link.")
         return
 
-    last_time = recent_requests[user_id].get(text)
-    if last_time and now - last_time < SPAM_COOLDOWN:
+    last = recent_requests[user_id].get(text)
+    if last and now - last < SPAM_COOLDOWN:
         await update.message.reply_text(
-            "⏳ This link is already being processed. Please wait."
+            "⏳ This link is already being processed."
         )
         return
 
     recent_requests[user_id][text] = now
     await update.message.reply_text("📥 Link received. Processing…")
-
     await task_queue.put((update, text))
 # ----------------------------------
 
 
-if __name__ == "__main__":
-    print("🤖 Bot is running live (web service mode)...")
+async def main():
+    print("🤖 Bot is running live (web service mode, Python 3.13 safe)...")
 
-    # start web server
     threading.Thread(target=run_web, daemon=True).start()
 
-    tg_app = ApplicationBuilder().token(BOT_TOKEN).build()
-    tg_app.add_handler(CommandHandler("start", start_cmd))
-    tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    loop = asyncio.get_event_loop()
     for _ in range(MAX_WORKERS):
-        loop.create_task(worker())
+        asyncio.create_task(worker())
 
-    tg_app.run_polling()
+    await app.run_polling()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
